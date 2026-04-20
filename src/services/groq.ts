@@ -1,6 +1,6 @@
 import type { Suggestion } from '../types';
 
-const GROQ_BASE = 'https://api.groq.com/openai/v1';
+const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? '') + '/api';
 
 export async function transcribeAudio(
   audioBlob: Blob,
@@ -10,11 +10,10 @@ export async function transcribeAudio(
   const form = new FormData();
   form.append('file', audioBlob, 'audio.webm');
   form.append('model', model);
-  form.append('response_format', 'text');
 
-  const res = await fetch(`${GROQ_BASE}/audio/transcriptions`, {
+  const res = await fetch(`${API_BASE}/transcribe`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${apiKey}` },
+    headers: { 'X-Groq-API-Key': apiKey },
     body: form,
   });
 
@@ -22,7 +21,8 @@ export async function transcribeAudio(
     const err = await res.text();
     throw new Error(`Transcription error ${res.status}: ${err}`);
   }
-  return res.text();
+  const data = await res.json();
+  return data.text;
 }
 
 export async function generateSuggestions(
@@ -30,19 +30,13 @@ export async function generateSuggestions(
   apiKey: string,
   model: string
 ): Promise<Suggestion[]> {
-  const res = await fetch(`${GROQ_BASE}/chat/completions`, {
+  const res = await fetch(`${API_BASE}/suggestions`, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${apiKey}`,
+      'X-Groq-API-Key': apiKey,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      model,
-      messages: [{ role: 'user', content: prompt }],
-      response_format: { type: 'json_object' },
-      temperature: 0.7,
-      max_tokens: 1024,
-    }),
+    body: JSON.stringify({ prompt, model }),
   });
 
   if (!res.ok) {
@@ -51,14 +45,9 @@ export async function generateSuggestions(
   }
 
   const data = await res.json();
-  const raw = JSON.parse(data.choices[0].message.content);
-  const items: Suggestion[] = (raw.suggestions ?? raw).map(
-    (s: Omit<Suggestion, 'id'>, i: number) => ({
-      ...s,
-      id: `${Date.now()}-${i}`,
-    })
-  );
-  return items.slice(0, 3);
+  return (data.suggestions as Omit<Suggestion, 'id'>[])
+    .map((s, i) => ({ ...s, id: `${Date.now()}-${i}` }))
+    .slice(0, 3);
 }
 
 export async function* streamChat(
@@ -66,19 +55,13 @@ export async function* streamChat(
   apiKey: string,
   model: string
 ): AsyncGenerator<string> {
-  const res = await fetch(`${GROQ_BASE}/chat/completions`, {
+  const res = await fetch(`${API_BASE}/chat`, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${apiKey}`,
+      'X-Groq-API-Key': apiKey,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      model,
-      messages,
-      stream: true,
-      temperature: 0.7,
-      max_tokens: 2048,
-    }),
+    body: JSON.stringify({ messages, model }),
   });
 
   if (!res.ok) {

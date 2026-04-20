@@ -34,10 +34,15 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
 
 export function ChatPanel({ messages, isLoading, onSend }: Props) {
   const [input, setInput] = useState('');
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (distanceFromBottom < 120) {
+      el.scrollTop = el.scrollHeight;
+    }
   }, [messages]);
 
   const handleSend = () => {
@@ -53,7 +58,7 @@ export function ChatPanel({ messages, isLoading, onSend }: Props) {
         <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">Chat</h2>
       </div>
 
-      <div className="flex-1 overflow-y-auto space-y-4 pr-1 pb-2">
+      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto space-y-4 pr-1 pb-2">
         {messages.length === 0 && (
           <p className="text-gray-500 text-sm mt-4">
             Click a suggestion or type a question below.
@@ -69,7 +74,6 @@ export function ChatPanel({ messages, isLoading, onSend }: Props) {
             <span className="w-1.5 h-1.5 rounded-full bg-gray-500 animate-bounce [animation-delay:300ms]" />
           </div>
         )}
-        <div ref={bottomRef} />
       </div>
 
       <div className="mt-2 flex gap-2">

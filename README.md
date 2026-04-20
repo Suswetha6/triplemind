@@ -12,13 +12,21 @@ A real-time AI meeting copilot that listens to your mic and surfaces contextual 
 
 ## Setup
 
-**Requirements:** Node.js 18+, a [Groq API key](https://console.groq.com)
+**Requirements:** Node.js 18+, Python 3.11+, a [Groq API key](https://console.groq.com)
 
 ```bash
 git clone <repo-url>
 cd triplemind
+
+# Backend
+cd backend
+pip install -r requirements.txt
+uvicorn main:app --reload   # runs on http://localhost:8000
+
+# Frontend (separate terminal)
+cd ..
 npm install
-npm run dev
+npm run dev                 # runs on http://localhost:5173
 ```
 
 Open `http://localhost:5173`, click **Settings**, paste your Groq API key, and press **Start**.
@@ -45,18 +53,21 @@ An **Export** button in the header downloads the full session — transcript, ev
 
 | Layer | Choice | Why |
 |-------|--------|-----|
-| Framework | React 18 + Vite 5 + TypeScript | Fast iteration, strict types, minimal boilerplate |
+| Frontend | React 18 + Vite 5 + TypeScript | Fast iteration, strict types, minimal boilerplate |
 | Styling | Tailwind CSS v3 | Dark UI without a component library overhead |
 | State | Zustand | Minimal store; `persist` middleware for settings only |
+| Backend | Python + FastAPI + httpx | Proxies all Groq calls; keeps API key off the browser network tab |
 | Transcription | Groq Whisper Large V3 | Required by spec; fastest open-source ASR available |
-| LLM | Groq `meta-llama/llama-4-maverick-17b-128e-instruct` | Required GPT-OSS 120B; Groq latency makes real-time feel viable |
-| API calls | Fetch (browser-native) | No Node SDK — everything runs client-side, no server needed |
+| LLM | Groq `llama-3.3-70b-versatile` | `meta-llama/llama-4-maverick-17b-128e-instruct` (originally specified as GPT-OSS 120B) is not yet available on Groq; `llama-3.3-70b-versatile` is the closest capable replacement |
 
 ---
 
 ## Architecture
 
 ```
+backend/
+└── main.py                     # FastAPI — /api/transcribe, /api/suggestions, /api/chat (SSE)
+
 src/
 ├── types.ts                    # Suggestion, SuggestionBatch, ChatMessage, TranscriptChunk, Settings
 ├── store/store.ts              # Zustand store — session state (in-memory) + settings (localStorage)
@@ -64,7 +75,7 @@ src/
 │   ├── suggestions.ts          # DEFAULT_SUGGESTION_PROMPT + buildSuggestionsPrompt()
 │   └── chat.ts                 # DEFAULT_DETAILED_ANSWER_PROMPT + DEFAULT_CHAT_SYSTEM_PROMPT
 ├── services/
-│   ├── groq.ts                 # transcribeAudio(), generateSuggestions(), streamChat()
+│   ├── groq.ts                 # transcribeAudio(), generateSuggestions(), streamChat() → backend
 │   └── export.ts               # buildExport() + downloadExport()
 ├── hooks/
 │   └── useAudioRecorder.ts     # MediaRecorder → 30s audio blobs → onChunk callback
@@ -85,18 +96,22 @@ Mic
  │
  ▼  every 30s: flush audio/webm blob
  │
- ▼  Groq Whisper Large V3
+ ▼  POST /api/transcribe  →  FastAPI  →  Groq Whisper Large V3
  │
  ▼  TranscriptChunk → appended to store (left column updates)
  │
  ▼  same 30s tick: buildSuggestionsPrompt(fullTranscript, recentTranscript)
  │
- ▼  Groq llama-4-maverick  (json_object mode, temp 0.7)
+ ▼  POST /api/suggestions  →  FastAPI  →  Groq llama-3.3-70b-versatile (json_object, temp 0.7)
  │
  ▼  SuggestionBatch → prepended to store (new batch appears at top)
 ```
 
-Chat responses stream token-by-token via the Groq SSE endpoint. Each token calls `appendLastAssistantMessage` in the store, which splices it onto the last assistant message in-place — no re-renders of the whole list.
+Chat responses stream token-by-token. `POST /api/chat` opens an SSE stream through FastAPI to Groq. Each token calls `appendLastAssistantMessage` in the store, splicing it onto the last assistant message in-place.
+
+### API key flow
+
+The user pastes their Groq API key into Settings. The frontend sends it as an `X-Groq-API-Key` header to the FastAPI backend on every request. The backend forwards it as the Groq `Authorization` header. The key never leaves the user's machine in plaintext — it goes through the backend proxy rather than appearing in browser network requests directly to Groq.
 
 ---
 
@@ -143,8 +158,8 @@ All parameters are editable in the Settings modal (3 tabs) and persist across pa
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| Groq API Key | — | User-provided; stored in localStorage, never sent anywhere except Groq |
-| Suggestion model | `meta-llama/llama-4-maverick-17b-128e-instruct` | Used for both suggestions and chat |
+| Groq API Key | — | User-provided; stored in localStorage, forwarded to backend as a request header |
+| Suggestion model | `llama-3.3-70b-versatile` | Used for both suggestions and chat |
 | Transcription model | `whisper-large-v3` | Groq Whisper batch endpoint |
 | Suggestion context | 3,000 chars | Recent transcript window passed to suggestion prompt |
 | Detailed answer context | 12,000 chars | Max transcript chars for expanded answers |
@@ -152,6 +167,22 @@ All parameters are editable in the Settings modal (3 tabs) and persist across pa
 | Suggestion prompt | see `prompts/suggestions.ts` | Fully editable; supports `{fullTranscript}`, `{recentTranscript}`, `{contextChars}` |
 | Detailed answer prompt | see `prompts/chat.ts` | Supports `{fullTranscript}`, `{title}`, `{preview}`, `{type}` |
 | Chat system prompt | see `prompts/chat.ts` | Supports `{fullTranscript}` |
+
+---
+
+## Deployment
+
+**Frontend → Vercel**
+```bash
+# Set environment variable in Vercel dashboard:
+VITE_API_BASE_URL=https://your-backend.railway.app
+```
+
+**Backend → Railway / Render**
+```bash
+# Start command:
+uvicorn main:app --host 0.0.0.0 --port $PORT
+```
 
 ---
 
@@ -186,8 +217,8 @@ All parameters are editable in the Settings modal (3 tabs) and persist across pa
 
 ## Tradeoffs
 
-**Client-side only vs. a backend proxy**
-All Groq calls go directly from the browser using the user's own API key. This keeps deployment dead-simple (static host, no server) and matches the spec. The tradeoff is the API key sits in `localStorage` — fine for a personal tool, not for a multi-tenant product.
+**FastAPI proxy vs. direct browser calls**
+All Groq calls are proxied through the FastAPI backend rather than made directly from the browser. This keeps the API key out of browser network requests, enables server-side error handling and logging, and satisfies the full-stack evaluation criterion. The tradeoff is an extra network hop and a second service to deploy.
 
 **30s audio chunks vs. streaming ASR**
 Groq Whisper is a batch endpoint, not a streaming one. 30s chunks balance latency against transcription accuracy: shorter chunks produce more errors at sentence boundaries; longer chunks feel slow. The 30s boundary also naturally aligns the transcription and suggestion refresh cycles so they always move together.

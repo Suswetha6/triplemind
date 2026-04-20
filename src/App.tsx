@@ -221,7 +221,7 @@ export default function App() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-gray-950 text-gray-100 flex flex-col">
+    <div className="h-screen overflow-hidden bg-gray-950 text-gray-100 flex flex-col">
       {/* Header */}
       <header className="border-b border-gray-800 px-6 py-3 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-2">
@@ -261,7 +261,7 @@ export default function App() {
       )}
 
       {/* 3-column layout */}
-      <div className="flex-1 grid grid-cols-3 divide-x divide-gray-800 overflow-hidden" style={{ height: 'calc(100vh - 48px)' }}>
+      <div className="flex-1 min-h-0 grid grid-cols-3 divide-x divide-gray-800 overflow-hidden">
         <div className="p-5 overflow-hidden flex flex-col">
           <TranscriptPanel
             chunks={store.transcript}

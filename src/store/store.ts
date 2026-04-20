@@ -11,7 +11,7 @@ import { DEFAULT_DETAILED_ANSWER_PROMPT, DEFAULT_CHAT_SYSTEM_PROMPT } from '../p
 
 const DEFAULT_SETTINGS: Settings = {
   groqApiKey: '',
-  suggestionModel: 'meta-llama/llama-4-maverick-17b-128e-instruct',
+  suggestionModel: 'llama-3.3-70b-versatile',
   transcriptionModel: 'whisper-large-v3',
   suggestionPrompt: DEFAULT_SUGGESTION_PROMPT,
   detailedAnswerPrompt: DEFAULT_DETAILED_ANSWER_PROMPT,
