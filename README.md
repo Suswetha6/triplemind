@@ -6,7 +6,7 @@ A real-time AI meeting copilot that listens to your mic and surfaces contextual 
 
 ## Live Demo
 
-> Add Vercel URL here after deployment
+**[https://triplemind.vercel.app](https://triplemind.vercel.app)**
 
 ---
 
