@@ -1,0 +1,12 @@
+tests/
+.pytest_cache/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+.env.*
+requirements*.in
+pyproject.toml
+Dockerfile
+.dockerignore

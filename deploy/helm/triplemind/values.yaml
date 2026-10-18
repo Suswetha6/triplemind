@@ -1,0 +1,221 @@
+# Default values -- tuned for a local kind cluster. Environment differences
+# live in values-<env>.yaml overlays rather than in edited copies of this file.
+
+global:
+  # Set by CI to the commit SHA so every object is labelled with the exact
+  # version running (`kubectl get deploy -L app.kubernetes.io/version`).
+  appVersion: ""
+  environment: dev
+  imageRegistry: ghcr.io
+  imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  # The workloads never call the Kubernetes API, so the token is not mounted.
+  automountServiceAccountToken: false
+  annotations: {}
+
+# ---------------------------------------------------------------------------
+# Backend: FastAPI proxy to Groq
+# ---------------------------------------------------------------------------
+backend:
+  replicaCount: 2
+
+  image:
+    repository: ghcr.io/suswetha6/triplemind-backend
+    tag: ""          # defaults to .Chart.AppVersion / global.appVersion
+    digest: ""       # takes precedence over tag when set
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 8000
+
+  # Requests are what the scheduler packs on; the memory limit is the hard
+  # stop. CPU limits are deliberately absent by default: this workload is
+  # latency-sensitive and CFS throttling at the limit hurts the p99 more than
+  # the noisy-neighbour risk it prevents. Set backend.resources.limits.cpu to
+  # re-enable if the cluster requires it.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 192Mi
+    limits:
+      memory: 512Mi
+
+  # Three probes, three different questions:
+  #  startup   -- "has the process finished booting?" (protects slow starts
+  #               from being killed by the liveness probe)
+  #  liveness  -- "is it wedged?" never touches Groq, so an upstream outage
+  #               cannot trigger a restart loop
+  #  readiness -- "should it receive traffic?" gates rollouts and drains
+  probes:
+    startup:
+      path: /healthz
+      periodSeconds: 2
+      failureThreshold: 15
+    liveness:
+      path: /healthz
+      periodSeconds: 10
+      timeoutSeconds: 3
+      failureThreshold: 3
+    readiness:
+      path: /readyz
+      periodSeconds: 5
+      timeoutSeconds: 3
+      failureThreshold: 3
+
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+    # Scale out fast, in slowly: suggestion traffic arrives in 30s bursts and
+    # flapping replicas would churn connections mid-stream.
+    behavior:
+      scaleUp:
+        stabilizationWindowSeconds: 30
+      scaleDown:
+        stabilizationWindowSeconds: 300
+
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+  config:
+    logLevel: INFO
+    logFormat: json
+    rateLimitRequests: 60
+    rateLimitWindowSeconds: 60
+    maxUploadBytes: 26214400
+    upstreamTimeoutSeconds: 60
+    groqBaseUrl: https://api.groq.com/openai/v1
+    # Browser traffic reaches the backend through the frontend's nginx on the
+    # same origin, so no cross-origin request is ever made in-cluster. The
+    # allowlist stays empty rather than "*".
+    corsAllowOrigins: ""
+    trustedHosts: "*"
+
+  tracing:
+    enabled: false
+    otlpEndpoint: http://tempo.observability.svc.cluster.local:4318
+    samplerRatio: 1.0
+
+  # Name of a pre-existing Secret whose keys are injected as env vars. The
+  # Groq API key is deliberately NOT here: it belongs to the end user and
+  # arrives per request. This hook exists for deployment-owned secrets only.
+  existingSecret: ""
+
+  extraEnv: []
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# ---------------------------------------------------------------------------
+# Frontend: static bundle served by unprivileged nginx, proxying /api
+# ---------------------------------------------------------------------------
+frontend:
+  replicaCount: 2
+
+  image:
+    repository: ghcr.io/suswetha6/triplemind-frontend
+    tag: ""
+    digest: ""
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 8080
+
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+
+  probes:
+    liveness:
+      path: /healthz
+      periodSeconds: 10
+      failureThreshold: 3
+    readiness:
+      path: /healthz
+      periodSeconds: 5
+      failureThreshold: 2
+
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 4
+    targetCPUUtilizationPercentage: 80
+
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# ---------------------------------------------------------------------------
+# Exposure
+# ---------------------------------------------------------------------------
+ingress:
+  enabled: true
+  className: nginx
+  host: triplemind.localtest.me
+  annotations:
+    # SSE: the chat response must not be buffered by the ingress either.
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-body-size: 25m
+  tls:
+    enabled: false
+    secretName: triplemind-tls
+
+# ---------------------------------------------------------------------------
+# Runtime hardening -- applied to both components
+# ---------------------------------------------------------------------------
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  privileged: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+networkPolicy:
+  enabled: true
+  # Namespace label selector for whatever scrapes /metrics.
+  monitoringNamespaceLabel: kubernetes.io/metadata.name
+  monitoringNamespace: observability
+  # Egress to the Groq API. Restricted to HTTPS; DNS is allowed separately.
+  allowExternalHttps: true
+
+# ---------------------------------------------------------------------------
+# Monitoring integration (requires the Prometheus Operator CRDs)
+# ---------------------------------------------------------------------------
+monitoring:
+  serviceMonitor:
+    enabled: false
+    interval: 15s
+    scrapeTimeout: 10s
+    labels: {}
+  prometheusRule:
+    enabled: false
+    labels: {}
+    # The SLO the alerts are derived from.
+    slo:
+      availabilityTarget: 0.99
+      latencyBudgetSeconds: 2

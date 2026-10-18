@@ -1,0 +1,313 @@
+# Continuous integration: every push and pull request.
+#
+# The jobs are deliberately independent so a failure points at one thing. The
+# gate that actually proves the system works is `e2e-kind`, which installs the
+# chart onto a throwaway cluster and runs the same `helm test` a human would.
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+# Least privilege by default; jobs that need more ask for it explicitly.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "22"
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  frontend:
+    name: Frontend -- lint, types, tests, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      # `npm ci` not `npm install`: fails if the lockfile and package.json
+      # disagree, so CI cannot silently resolve a different dependency tree.
+      - run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm run test:coverage
+
+      - name: Build
+        run: npm run build
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: frontend-coverage
+          path: coverage/
+          retention-days: 7
+
+  backend:
+    name: Backend -- lint and tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - run: pip install -r requirements-dev.txt
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Tests
+        run: pytest --cov --cov-report=xml --cov-report=term
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backend-coverage
+          path: backend/coverage.xml
+          retention-days: 7
+
+  chart:
+    name: Helm chart -- lint and manifest validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: Lint every value set
+        run: |
+          for f in values.yaml values-dev.yaml values-prod.yaml; do
+            echo "::group::helm lint -f $f"
+            helm lint deploy/helm/triplemind -f "deploy/helm/triplemind/$f" --strict
+            echo "::endgroup::"
+          done
+
+      - name: Install kubeconform
+        run: |
+          curl -sSLo kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          tar xf kubeconform.tar.gz kubeconform
+          sudo mv kubeconform /usr/local/bin/
+
+      # Renders both overlays and validates them against the real Kubernetes
+      # API schemas, so a typo in prod values is caught without a prod cluster.
+      - name: Validate rendered manifests
+        run: |
+          for env in dev prod; do
+            echo "::group::$env"
+            helm template triplemind deploy/helm/triplemind \
+              -f "deploy/helm/triplemind/values-$env.yaml" \
+              --set monitoring.serviceMonitor.enabled=false \
+              --set monitoring.prometheusRule.enabled=false \
+              | kubeconform -strict -summary -kubernetes-version 1.31.0 \
+                  -schema-location default -
+            echo "::endgroup::"
+          done
+
+      # Rendered separately: these are guarded on the Prometheus Operator CRDs
+      # being present, so --api-versions is required or they render to nothing
+      # and this step would pass without checking anything. The output is
+      # asserted non-empty for exactly that reason.
+      - name: Render monitoring resources
+        run: |
+          out=$(helm template triplemind deploy/helm/triplemind \
+            -f deploy/helm/triplemind/values-prod.yaml \
+            --api-versions monitoring.coreos.com/v1 \
+            -s templates/servicemonitor.yaml -s templates/prometheusrule.yaml)
+          echo "$out" | grep -q "kind: ServiceMonitor"
+          echo "$out" | grep -q "kind: PrometheusRule"
+          # Every alert must carry a summary and a description, or an on-call
+          # engineer gets a name and no next step.
+          alerts=$(echo "$out" | grep -c "^ *- alert:")
+          summaries=$(echo "$out" | grep -c "^ *summary:")
+          descriptions=$(echo "$out" | grep -c "^ *description:")
+          echo "alerts=$alerts summaries=$summaries descriptions=$descriptions"
+          test "$alerts" -gt 0 && test "$summaries" -eq "$alerts" && test "$descriptions" -eq "$alerts"
+
+  security:
+    name: Security -- secrets, dependencies, IaC
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so the secret scan covers every commit, not just the tip.
+          fetch-depth: 0
+
+      - name: Secret scan (gitleaks)
+        run: |
+          docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.21.2 \
+            detect --source=/repo --redact --verbose --no-banner
+
+      - name: Dependency and config scan (trivy)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          format: sarif
+          output: trivy-fs.sarif
+
+      - name: Upload findings
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs
+
+      - name: Dockerfile lint (hadolint)
+        run: |
+          docker run --rm -i hadolint/hadolint:2.12.0 hadolint --failure-threshold warning - < Dockerfile
+          docker run --rm -i hadolint/hadolint:2.12.0 hadolint --failure-threshold warning - < backend/Dockerfile
+
+  images:
+    name: Images -- build and scan
+    runs-on: ubuntu-latest
+    needs: [frontend, backend]
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: frontend
+            context: .
+            dockerfile: Dockerfile
+          - component: backend
+            context: ./backend
+            dockerfile: backend/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build ${{ matrix.component }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: false
+          load: true
+          tags: triplemind-${{ matrix.component }}:${{ github.sha }}
+          build-args: |
+            APP_VERSION=${{ github.sha }}
+            GIT_SHA=${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}
+
+      # A CRITICAL/HIGH finding fails the build rather than being reported and
+      # ignored. ignore-unfixed keeps it actionable: only vulnerabilities with
+      # an available patch can block a merge.
+      - name: Scan image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: triplemind-${{ matrix.component }}:${{ github.sha }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          format: sarif
+          output: trivy-${{ matrix.component }}.sarif
+
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-${{ matrix.component }}.sarif
+          category: trivy-image-${{ matrix.component }}
+
+      - name: Confirm the image does not run as root
+        run: |
+          user=$(docker image inspect triplemind-${{ matrix.component }}:${{ github.sha }} \
+                   --format '{{.Config.User}}')
+          echo "configured user: ${user:-<root>}"
+          test -n "$user" && test "$user" != "root" && test "$user" != "0"
+
+  e2e-kind:
+    name: E2E -- deploy to kind and smoke test
+    runs-on: ubuntu-latest
+    needs: [chart, images]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build images
+        run: |
+          docker build -t triplemind-frontend:dev \
+            --build-arg APP_VERSION=${{ github.sha }} --build-arg GIT_SHA=${{ github.sha }} .
+          docker build -t triplemind-backend:dev \
+            --build-arg APP_VERSION=${{ github.sha }} --build-arg GIT_SHA=${{ github.sha }} ./backend
+
+      - uses: helm/kind-action@v1
+        with:
+          config: deploy/kind/cluster.yaml
+          cluster_name: triplemind
+
+      - name: Install ingress-nginx
+        run: |
+          kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.12.0/deploy/static/provider/kind/deploy.yaml
+          kubectl wait --namespace ingress-nginx \
+            --for=condition=ready pod \
+            --selector=app.kubernetes.io/component=controller --timeout=180s
+
+      - name: Load images onto the node
+        run: kind load docker-image triplemind-backend:dev triplemind-frontend:dev --name triplemind
+
+      - name: Install the chart
+        run: |
+          helm upgrade --install triplemind deploy/helm/triplemind \
+            -n triplemind --create-namespace \
+            -f deploy/helm/triplemind/values-dev.yaml \
+            --set monitoring.serviceMonitor.enabled=false \
+            --set monitoring.prometheusRule.enabled=false \
+            --set global.appVersion=${{ github.sha }} \
+            --wait --timeout 5m
+
+      - name: Smoke test the release
+        run: helm test triplemind -n triplemind --logs
+
+      - name: Verify the deployed version matches this commit
+        run: ./scripts/verify-version.sh triplemind ${{ github.sha }}
+
+      - name: Exercise the request path through the ingress
+        run: ./scripts/smoke.sh http://triplemind.localtest.me:8081
+
+      - name: Prove a rollback restores the previous revision
+        run: ./scripts/rollback-drill.sh triplemind
+
+      - name: Collect diagnostics
+        if: failure()
+        run: |
+          kubectl get all -n triplemind -o wide || true
+          kubectl describe pods -n triplemind || true
+          kubectl logs -n triplemind -l app.kubernetes.io/part-of=triplemind --all-containers --tail=200 || true

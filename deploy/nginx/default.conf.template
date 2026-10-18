@@ -1,0 +1,80 @@
+# Rendered at container start by nginx's envsubst entrypoint into
+# /tmp/nginx-conf/default.conf. Only BACKEND_* variables are substituted
+# (NGINX_ENVSUBST_FILTER), so nginx's own $uri / $host survive intact.
+
+upstream backend {
+    server ${BACKEND_UPSTREAM};
+    keepalive 16;
+}
+
+server {
+    listen 8080;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    access_log /dev/stdout json_combined;
+    error_log  /dev/stderr warn;
+
+    include /etc/nginx/security-headers.conf;
+
+    client_max_body_size 25m;
+    gzip on;
+    gzip_types text/css application/javascript application/json image/svg+xml;
+    gzip_min_length 1024;
+
+    # Probe target for the frontend pod. Served by nginx itself so it stays
+    # green even when the backend is down -- the two have separate blast radii.
+    location = /healthz {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
+    # Same-origin API path. This is why the browser never makes a cross-origin
+    # request and why VITE_API_BASE_URL stays empty in Compose and Kubernetes.
+    location /api/ {
+        proxy_pass http://backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # Carries the caller's correlation id through when supplied, otherwise
+        # nginx's own -- see the $req_id map in nginx.conf.
+        proxy_set_header X-Request-ID $req_id;
+        proxy_set_header Connection "";
+
+        # /api/chat is a token-by-token SSE stream: buffering it would defeat
+        # the point, so responses are flushed straight through.
+        proxy_buffering off;
+        proxy_cache off;
+        chunked_transfer_encoding on;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+
+    # Vite emits content-hashed filenames, so assets are safe to cache forever.
+    location /assets/ {
+        include /etc/nginx/security-headers.conf;
+        add_header Cache-Control "public, immutable, max-age=31536000" always;
+        try_files $uri =404;
+    }
+
+    # index.html must never be cached, or a rollout leaves clients pinned to an
+    # old bundle that references asset hashes the new release no longer has.
+    location = /index.html {
+        include /etc/nginx/security-headers.conf;
+        add_header Cache-Control "no-store, must-revalidate" always;
+    }
+
+    location = /version.json {
+        include /etc/nginx/security-headers.conf;
+        add_header Cache-Control "no-store" always;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

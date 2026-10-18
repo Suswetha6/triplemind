@@ -6,32 +6,69 @@ A real-time AI meeting copilot that listens to your mic and surfaces contextual 
 
 ## Live Demo
 
-**[https://triplemind.vercel.app](https://triplemind.vercel.app)**
+**[https://triplemind.vercel.app](https://triplemind.vercel.app)** — the
+original Vercel deployment of the frontend. The containerised Kubernetes
+deployment is the one described under [Running it](#running-it).
 
 ---
 
-## Setup
+## Running it
 
-**Requirements:** Node.js 18+, Python 3.11+, a [Groq API key](https://console.groq.com)
+Three ways, in increasing order of fidelity to how it is deployed.
+
+### 1. Docker Compose — the whole stack, one command
 
 ```bash
-git clone <repo-url>
-cd triplemind
-
-# Backend
-cd backend
-pip install -r requirements.txt
-uvicorn main:app --reload   # runs on http://localhost:8000
-
-# Frontend (separate terminal)
-cd ..
-npm install
-npm run dev                 # runs on http://localhost:5173
+cp .env.example .env          # optional; only needed to change host ports
+make up                       # or: docker compose up -d --build
+open http://localhost:8080
 ```
 
-Open `http://localhost:5173`, click **Settings**, paste your Groq API key, and press **Start**.
+Add Prometheus, Grafana and Tempo:
 
----
+```bash
+make up-observability
+open http://localhost:3000    # Grafana, admin / $GRAFANA_PASSWORD (default: admin)
+```
+
+### 2. Kubernetes (kind) — how it actually ships
+
+```bash
+make kind-up                  # cluster + ingress-nginx
+make deploy                   # build, side-load, helm install
+make verify                   # helm test + version check + smoke test
+open http://triplemind.localtest.me:8081
+```
+
+Then, optionally:
+
+```bash
+make monitoring               # Prometheus, Grafana, Tempo, dashboard, alert rules
+make journey                  # full user journey against a stand-in provider
+make rollback-drill           # break a release on purpose and recover from it
+make load                     # drive traffic until the HPA scales
+```
+
+### 3. Bare metal dev loop
+
+```bash
+cd backend && pip install -r requirements-dev.txt
+uvicorn app.main:app --reload          # :8000
+npm ci && npm run dev                  # :5173, proxies /api to :8000
+```
+
+**Prerequisites:** Docker, Node 22+, Python 3.12+ (bare metal only), and for
+the Kubernetes path `kind`, `kubectl` and `helm`. A [Groq API
+key](https://console.groq.com) is needed to use the app for real — paste it
+into Settings. The deployment never stores one.
+
+**Tests:**
+
+```bash
+make test                     # vitest (22) + pytest (22)
+make test-backend-docker      # backend suite without a local Python
+make chart-lint               # helm lint across all three value sets
+```
 
 ## What it does
 
@@ -59,6 +96,10 @@ An **Export** button in the header downloads the full session — transcript, ev
 | Backend | Python + FastAPI + httpx | Proxies all Groq calls; keeps API key off the browser network tab |
 | Transcription | Groq Whisper Large V3 | Required by spec; fastest open-source ASR available |
 | LLM | Groq `llama-3.3-70b-versatile` | `meta-llama/llama-4-maverick-17b-128e-instruct` (originally specified as GPT-OSS 120B) is not yet available on Groq; `llama-3.3-70b-versatile` is the closest capable replacement |
+| Containers | Multi-stage Docker, nginx-unprivileged + python-slim | Non-root and read-only-root-filesystem capable; small attack surface |
+| Orchestration | Kubernetes via Helm, local kind | One chart, per-environment values, no drifting manifest copies |
+| CI/CD | GitHub Actions | Checks and builds on every push; approval-gated deploy with automatic rollback |
+| Observability | Prometheus, Grafana, Tempo, OpenTelemetry | Metrics, logs and traces that share one request id |
 
 ---
 
@@ -66,7 +107,27 @@ An **Export** button in the header downloads the full session — transcript, ev
 
 ```
 backend/
-└── main.py                     # FastAPI — /api/transcribe, /api/suggestions, /api/chat (SSE)
+├── app/
+│   ├── main.py                 # app factory, middleware order, exception handlers
+│   ├── config.py               # env-driven settings (TM_* prefix)
+│   ├── logging_setup.py        # JSON formatter + request-id context
+│   ├── observability.py        # Prometheus metrics, OTel tracing setup
+│   ├── middleware.py           # request id / access log / metrics, rate limit, body cap
+│   └── routes/
+│       ├── health.py           # /healthz /readyz /version /metrics
+│       └── proxy.py            # /api/transcribe /api/suggestions /api/chat
+├── tests/                      # 22 pytest cases
+├── requirements.in             # direct deps; requirements.txt is the generated lock
+└── Dockerfile
+
+deploy/
+├── helm/triplemind/            # one chart, values{,-dev,-prod}.yaml
+├── nginx/                      # main config, server template, security headers
+├── kind/                       # local cluster config + stand-in provider
+└── observability/              # Prometheus, alerts, Tempo, Grafana dashboards
+
+scripts/                        # smoke, version check, rollback drill, journey, load
+.github/workflows/              # ci.yml, cd.yml, codeql.yml
 
 src/
 ├── types.ts                    # Suggestion, SuggestionBatch, ChatMessage, TranscriptChunk, Settings
@@ -79,13 +140,12 @@ src/
 │   └── export.ts               # buildExport() + downloadExport()
 ├── hooks/
 │   └── useAudioRecorder.ts     # MediaRecorder → 30s audio blobs → onChunk callback
-└── components/
-    ├── TranscriptPanel.tsx     # Left column: mic toggle + auto-scrolling transcript
-    ├── SuggestionsPanel.tsx    # Middle column: batches list + manual refresh button
-    ├── SuggestionCard.tsx      # Card with colored type badge, title, preview
-    ├── ChatPanel.tsx           # Right column: streamed messages + input
-    └── SettingsModal.tsx       # 3-tab modal: API/Models | Prompts | Parameters
+└── components/                 # TranscriptPanel, SuggestionsPanel, SuggestionCard, ChatPanel, SettingsModal
 ```
+
+Deeper detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the request
+path and failure boundaries, and [docs/DECISIONS.md](docs/DECISIONS.md) for
+why each choice was made and when a different one would be right.
 
 ### Data flow
 
@@ -96,13 +156,13 @@ Mic
  │
  ▼  every 30s: flush audio/webm blob
  │
- ▼  POST /api/transcribe  →  FastAPI  →  Groq Whisper Large V3
+ ▼  POST /api/transcribe  →  nginx  →  FastAPI  →  Groq Whisper Large V3
  │
  ▼  TranscriptChunk → appended to store (left column updates)
  │
  ▼  same 30s tick: buildSuggestionsPrompt(fullTranscript, recentTranscript)
  │
- ▼  POST /api/suggestions  →  FastAPI  →  Groq llama-3.3-70b-versatile (json_object, temp 0.7)
+ ▼  POST /api/suggestions  →  nginx  →  FastAPI  →  Groq llama-3.3-70b-versatile (json_object, temp 0.7)
  │
  ▼  SuggestionBatch → prepended to store (new batch appears at top)
 ```
@@ -170,21 +230,95 @@ All parameters are editable in the Settings modal (3 tabs) and persist across pa
 
 ---
 
-## Deployment
+## Deploying
 
-**Frontend → Vercel**
+### Kubernetes
+
+One Helm chart, three value sets, no duplicated manifests:
+
+| File | Used for |
+|---|---|
+| `values.yaml` | defaults and documentation of every knob |
+| `values-dev.yaml` | the kind cluster — 1 replica, side-loaded images, no HPA |
+| `values-prod.yaml` | reference overlay — 3 replicas, HPA, TLS, NetworkPolicy, digest-pinned images |
+
 ```bash
-# Set environment variable in Vercel dashboard:
-VITE_API_BASE_URL=https://your-backend.railway.app
+helm upgrade --install triplemind deploy/helm/triplemind \
+  -n triplemind --create-namespace \
+  -f deploy/helm/triplemind/values-dev.yaml \
+  --set global.appVersion=$(git rev-parse --short HEAD) \
+  --wait
+helm test triplemind -n triplemind --logs
 ```
 
-**Backend → Railway / Render**
-```bash
-# Start command:
-uvicorn main:app --host 0.0.0.0 --port $PORT
-```
+The chart ships Deployments (stateless — see
+[DECISIONS.md](docs/DECISIONS.md#deployment-not-statefulset)), startup +
+liveness + readiness probes, resource requests, an HPA, PodDisruptionBudgets,
+NetworkPolicies, a ServiceMonitor, SLO-derived alert rules, and a `helm test`
+smoke pod.
 
----
+### Pipeline
+
+| Workflow | Trigger | What it does |
+|---|---|---|
+| `ci.yml` | every push and PR | lint, typecheck, unit tests, chart lint, manifest validation against real K8s schemas, secret scan, dependency and image scan, Dockerfile lint, non-root assertion, **and a full kind deploy + smoke test + rollback drill** |
+| `cd.yml` | push to main | builds and pushes both images to GHCR tagged by commit SHA with provenance and SBOM, pauses for manual approval, deploys the same chart, verifies, and **rolls back automatically if verification fails** |
+| `codeql.yml` | PR + weekly | static analysis of the TypeScript and Python we wrote |
+
+Traceability: images are tagged with the commit SHA, the chart labels every
+object with `app.kubernetes.io/version`, the backend serves `/version`, the
+frontend serves `/version.json`, and Prometheus carries
+`triplemind_build_info`. `scripts/verify-version.sh` asserts the label and the
+running process agree with the commit that was built.
+
+## Observability
+
+- **Metrics** — `/metrics` on the backend: request rate, latency histogram and
+  in-flight count by route; Groq call rate, latency and outcome by operation;
+  rate-limit rejections; build info.
+- **Logs** — JSON on stdout from nginx *and* FastAPI, with the same field
+  names and a shared `X-Request-ID` so one request can be followed across both.
+- **Traces** — OTLP/HTTP to Tempo, with FastAPI and httpx instrumented, so a
+  slow request shows whether the time was ours or the provider's.
+- **Dashboard and alerts** — `deploy/observability/grafana/dashboards/` and the
+  chart's `PrometheusRule`. Alerts fire on **error-budget burn rate** against a
+  99% / 1-hour availability SLO, not on raw error counts, and each carries the
+  diagnostic step to take in its annotations — including when *not* to roll
+  back, because a provider outage is not fixed by redeploying.
+
+## Security
+
+| Control | Where |
+|---|---|
+| No credential in the repo or the cluster | The Groq key is the user's, held in their browser, forwarded per request — see [DECISIONS.md](docs/DECISIONS.md#the-users-api-key-is-never-a-cluster-secret) |
+| Non-root, read-only root filesystem, all capabilities dropped, no privilege escalation, `RuntimeDefault` seccomp | both containers, enforced in the chart and asserted in CI |
+| No API token mounted | `automountServiceAccountToken: false` — neither workload talks to the API server |
+| CORS allowlist, never `*` | backend config; empty in-cluster because traffic is same-origin |
+| Rate limiting and upload size caps | backend middleware |
+| Upstream error bodies logged, not returned | backend, with a test that plants a secret in an upstream error and asserts it never reaches the client |
+| CSP, `X-Frame-Options: DENY`, nosniff, Referrer-Policy, Permissions-Policy | nginx, on every response |
+| NetworkPolicy — backend reachable only from the frontend and the monitoring namespace; egress limited to DNS and HTTPS | chart (see limitations) |
+| Secret, dependency, image, IaC and static analysis scanning | `ci.yml` and `codeql.yml`, failing the build on fixable CRITICAL/HIGH |
+
+## Known limitations
+
+Stated so no claim here is read as stronger than it is:
+
+- **NetworkPolicies are written but not enforced locally.** kind's default CNI
+  ignores them. They are rendered and schema-validated in CI and enabled in
+  `values-prod.yaml`; proving they block traffic needs Calico or Cilium.
+- **Rate limiting is per pod.** With N replicas the real ceiling is N × limit.
+  It stops accidental loops, not a determined attacker.
+- **The backend API is unauthenticated.** It is a proxy that carries the
+  caller's own credential; anyone who can reach it can spend their own Groq
+  quota through it. NetworkPolicy and the rate limiter are the compensating
+  controls. Real auth is the prerequisite for a hosted multi-tenant version.
+- **CD deploys to an ephemeral kind cluster**, because a hosted runner cannot
+  reach a laptop. The chart, values, digests and verification are identical to
+  a real deploy; only the cluster is disposable.
+- **The HPA needs metrics-server**, which kind does not install by default.
+- **No persistence anywhere** — by design, but it does mean a browser refresh
+  ends the session.
 
 ## Export format
 

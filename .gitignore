@@ -1,8 +1,26 @@
+# dependencies and build output
 node_modules
 dist
-.env
-.env.local
+coverage
+.vite
+
+# python
 venv/
+.venv/
 __pycache__/
 *.pyc
-context.md
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+
+# local configuration and secrets -- never commit these
+.env
+.env.local
+.env.*.local
+*.kubeconfig
+kubeconfig*
+
+# scratch
+.DS_Store
+*.log

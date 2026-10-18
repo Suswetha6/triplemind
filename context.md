@@ -1,5 +1,11 @@
 # TripleMind - Context for Claude
 
+> **Note:** these are the application-era working notes, kept for history. They
+> describe the app before the DevOps work and are stale in places (the
+> "no server needed" line predates the FastAPI backend). For current state see
+> [README.md](README.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and
+> [docs/DECISIONS.md](docs/DECISIONS.md).
+
 ## Assignment Summary
 Build a 3-column web app that listens to live mic audio and surfaces real-time AI suggestions during conversations, mimicking and improving on TwinMind's live suggestions feature.
 

@@ -1,0 +1,25 @@
+{{- /* Skipped when the Prometheus Operator CRDs are absent, so the chart
+       installs on a bare cluster. scripts/install-monitoring.sh asserts these
+       objects exist after installing the operator, so a missing monitoring
+       setup cannot pass unnoticed. */ -}}
+{{- if and .Values.monitoring.serviceMonitor.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "triplemind.backendFullname" . }}
+  labels:
+    {{- include "triplemind.componentLabels" (dict "root" . "component" "backend") | nindent 4 }}
+    {{- with .Values.monitoring.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels: {{- include "triplemind.componentSelectorLabels" (dict "root" . "component" "backend") | nindent 6 }}
+  namespaceSelector:
+    matchNames: [{{ .Release.Namespace }}]
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.monitoring.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.monitoring.serviceMonitor.scrapeTimeout }}
+{{- end }}

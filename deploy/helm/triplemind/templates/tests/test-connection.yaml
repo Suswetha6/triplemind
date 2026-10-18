@@ -1,0 +1,54 @@
+# `helm test <release>` -- a post-deploy smoke check that the chart itself
+# ships, so a release can be verified with one command in any environment.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "triplemind.fullname" . }}-test"
+  labels: {{- include "triplemind.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: smoke
+      image: curlimages/curl:8.11.1
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      args:
+        - /bin/sh
+        - -ec
+        - |
+          FE={{ include "triplemind.frontendFullname" . }}:{{ .Values.frontend.service.port }}
+          BE={{ include "triplemind.backendFullname" . }}:{{ .Values.backend.service.port }}
+
+          echo "frontend health"
+          curl -fsS "http://$FE/healthz" | grep -q ok
+
+          echo "frontend serves the SPA"
+          curl -fsS "http://$FE/" | grep -qi "<div id=\"root\">"
+
+          echo "backend reports the deployed version"
+          curl -fsS "http://$BE/version"
+          curl -fsS "http://$BE/version" | grep -q '"version"'
+
+          echo "backend readiness"
+          curl -fsS "http://$BE/readyz" | grep -q ready
+
+          echo "metrics are exposed"
+          curl -fsS "http://$BE/metrics" | grep -q triplemind_http_requests_total
+
+          echo "api reachable through the frontend proxy (422 = validated, not routed to a 404)"
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://$FE/api/suggestions" \
+            -H 'Content-Type: application/json' -d '{"prompt":"x","model":"m"}')
+          test "$code" = "422"
+
+          echo "ALL CHECKS PASSED"

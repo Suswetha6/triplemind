@@ -1,0 +1,26 @@
+{{- if .Values.backend.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "triplemind.backendFullname" . }}
+  labels: {{- include "triplemind.componentLabels" (dict "root" . "component" "backend") | nindent 4 }}
+spec:
+  # Keeps a node drain from taking the whole backend down at once. Paired with
+  # maxUnavailable:0 on the rollout, capacity is preserved during both
+  # voluntary disruptions and releases.
+  minAvailable: {{ .Values.backend.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels: {{- include "triplemind.componentSelectorLabels" (dict "root" . "component" "backend") | nindent 6 }}
+{{- end }}
+---
+{{- if .Values.frontend.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "triplemind.frontendFullname" . }}
+  labels: {{- include "triplemind.componentLabels" (dict "root" . "component" "frontend") | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.frontend.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels: {{- include "triplemind.componentSelectorLabels" (dict "root" . "component" "frontend") | nindent 6 }}
+{{- end }}

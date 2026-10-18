@@ -1,0 +1,73 @@
+# Compose-profile mirror of templates/prometheusrule.yaml. Kept in step so a
+# rule can be tried locally before it is shipped to a cluster.
+groups:
+  - name: triplemind.slo.recording
+    interval: 30s
+    rules:
+      - record: triplemind:request_error_ratio:rate5m
+        expr: |
+          (sum(rate(triplemind_http_requests_total{status=~"5.."}[5m])) or vector(0))
+            /
+          clamp_min(sum(rate(triplemind_http_requests_total[5m])), 1e-9)
+      - record: triplemind:request_error_ratio:rate1h
+        expr: |
+          (sum(rate(triplemind_http_requests_total{status=~"5.."}[1h])) or vector(0))
+            /
+          clamp_min(sum(rate(triplemind_http_requests_total[1h])), 1e-9)
+      - record: triplemind:request_latency_p95:5m
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(triplemind_http_request_duration_seconds_bucket{route!~"/healthz|/readyz|/metrics"}[5m]))
+          )
+      - record: triplemind:upstream_error_ratio:rate5m
+        expr: |
+          (sum(rate(triplemind_upstream_requests_total{outcome!="success"}[5m])) or vector(0))
+            /
+          clamp_min(sum(rate(triplemind_upstream_requests_total[5m])), 1e-9)
+
+  - name: triplemind.alerts
+    rules:
+      # 99% availability target -> 1% error budget -> 14.4x fast burn.
+      - alert: TripleMindErrorBudgetFastBurn
+        expr: |
+          triplemind:request_error_ratio:rate5m > 0.144
+          and
+          triplemind:request_error_ratio:rate1h > 0.144
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: TripleMind is burning its error budget 14x faster than sustainable
+
+      - alert: TripleMindErrorBudgetSlowBurn
+        expr: triplemind:request_error_ratio:rate1h > 0.03
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: TripleMind error ratio above the slow-burn threshold
+
+      - alert: TripleMindLatencyBudgetExceeded
+        expr: triplemind:request_latency_p95:5m > 2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: p95 latency above the 2s budget
+
+      - alert: TripleMindUpstreamDegraded
+        expr: triplemind:upstream_error_ratio:rate5m > 0.25
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Over a quarter of Groq calls are failing
+
+      - alert: TripleMindBackendAbsent
+        expr: up{job="triplemind-backend"} == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: The backend is not being scraped successfully

@@ -1,0 +1,79 @@
+# Values for the kube-prometheus-stack chart, trimmed to what a single-node
+# kind cluster can carry. Not a production monitoring design: retention is
+# short, storage is ephemeral, and the control-plane scrapers that kind does
+# not expose are switched off to avoid permanently-red targets.
+
+fullnameOverride: monitoring
+
+prometheus:
+  prometheusSpec:
+    retention: 6h
+    scrapeInterval: 15s
+    evaluationInterval: 15s
+    resources:
+      requests:
+        cpu: 100m
+        memory: 400Mi
+      limits:
+        memory: 1Gi
+    # Discover ServiceMonitors and rules in every namespace, not only those
+    # labelled with this release -- the app chart ships its own.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+
+alertmanager:
+  alertmanagerSpec:
+    resources:
+      requests:
+        cpu: 25m
+        memory: 64Mi
+      limits:
+        memory: 256Mi
+
+grafana:
+  # The admin password comes from a Secret created outside this file by
+  # scripts/install-monitoring.sh. No credential is committed to the repo.
+  admin:
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
+  defaultDashboardsEnabled: true
+  sidecar:
+    dashboards:
+      enabled: true
+      # Picks up any ConfigMap carrying this label, which is how the
+      # TripleMind dashboard gets in without being pasted through the UI.
+      label: grafana_dashboard
+      searchNamespace: ALL
+    datasources:
+      enabled: true
+  additionalDataSources:
+    - name: Tempo
+      type: tempo
+      uid: tempo
+      access: proxy
+      url: http://tempo.observability.svc.cluster.local:3200
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+# kind does not expose these control-plane endpoints; scraping them would
+# leave permanently-failing targets that train people to ignore red.
+kubeEtcd:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeProxy:
+  enabled: false
+
+prometheus-node-exporter:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi

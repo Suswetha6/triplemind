@@ -1,0 +1,110 @@
+# Local parity stack. The core profile is the application; the observability
+# profile adds the same signals the Kubernetes deployment collects, so a
+# dashboard can be developed without a cluster:
+#
+#   docker compose up --build                          # app only
+#   docker compose --profile observability up --build  # app + Prometheus/Grafana/Tempo
+name: triplemind
+
+services:
+  backend:
+    build:
+      context: ./backend
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}
+        GIT_SHA: ${GIT_SHA:-local}
+    image: triplemind-backend:${APP_VERSION:-dev}
+    environment:
+      TM_ENVIRONMENT: local
+      TM_LOG_FORMAT: json
+      TM_LOG_LEVEL: INFO
+      # The browser only ever talks to nginx, so the backend's own CORS
+      # allowlist just covers direct access during development.
+      TM_CORS_ALLOW_ORIGINS: http://localhost:8080,http://localhost:5173
+      TM_RATE_LIMIT_REQUESTS: ${TM_RATE_LIMIT_REQUESTS:-120}
+      TM_OTEL_EXPORTER_OTLP_ENDPOINT: ${TM_OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    ports:
+      # Host ports are configurable so the stack can coexist with other
+      # local services; see .env.example.
+      - "${BACKEND_PORT:-8000}:8000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz',timeout=2).status==200 else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}
+        GIT_SHA: ${GIT_SHA:-local}
+    image: triplemind-frontend:${APP_VERSION:-dev}
+    environment:
+      BACKEND_UPSTREAM: backend:8000
+    ports:
+      - "${FRONTEND_PORT:-8080}:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      # nginx renders its config, pid file and caches into /tmp at startup,
+      # which is what lets the rest of the filesystem stay read-only.
+      - /tmp
+      - /var/cache/nginx
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  # --- observability profile ------------------------------------------------
+  prometheus:
+    profiles: ["observability"]
+    image: prom/prometheus:v3.1.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=6h
+      - --web.enable-lifecycle
+    volumes:
+      - ./deploy/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    restart: unless-stopped
+
+  tempo:
+    profiles: ["observability"]
+    image: grafana/tempo:2.7.1
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ./deploy/observability/tempo.yaml:/etc/tempo/tempo.yaml:ro
+    ports:
+      - "${TEMPO_PORT:-4318}:4318"   # OTLP/HTTP, the endpoint the backend exports to
+    restart: unless-stopped
+
+  grafana:
+    profiles: ["observability"]
+    image: grafana/grafana:11.5.1
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./deploy/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    depends_on:
+      - prometheus
+      - tempo
+    restart: unless-stopped

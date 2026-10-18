@@ -1,0 +1,77 @@
+# A stand-in Groq API for demos and CI, so the full user journey can be shown
+# without a real provider key. Applied by scripts/demo-journey.sh, which first
+# creates the mock-groq-src ConfigMap from scripts/mock-groq.py (the script is
+# kept in one place rather than duplicated inline here).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-groq
+  labels:
+    app.kubernetes.io/name: mock-groq
+    app.kubernetes.io/part-of: triplemind
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mock-groq
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mock-groq
+        # Matches the backend NetworkPolicy's frontend selector? No -- this is
+        # an egress target, reached over the cluster network on port 8081.
+        app.kubernetes.io/part-of: triplemind
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mock
+          image: python:3.12-slim
+          command: ["python", "/src/mock-groq.py"]
+          ports:
+            - name: http
+              containerPort: 8081
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 3
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: src
+              mountPath: /src
+              readOnly: true
+      volumes:
+        - name: src
+          configMap:
+            name: mock-groq-src
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-groq
+  labels:
+    app.kubernetes.io/name: mock-groq
+    app.kubernetes.io/part-of: triplemind
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8081
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: mock-groq
