@@ -167,7 +167,7 @@ jobs:
             detect --source=/repo --redact --verbose --no-banner
 
       - name: Dependency and config scan (trivy)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -230,7 +230,7 @@ jobs:
       # ignored. ignore-unfixed keeps it actionable: only vulnerabilities with
       # an available patch can block a merge.
       - name: Scan image
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: triplemind-${{ matrix.component }}:${{ github.sha }}
           severity: CRITICAL,HIGH
