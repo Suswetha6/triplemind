@@ -1,0 +1,15 @@
+apiVersion: v2
+name: triplemind
+description: Real-time AI meeting copilot -- React/nginx frontend and a FastAPI proxy to Groq.
+type: application
+
+# version      = chart version, bumped when templates change
+# appVersion   = application version, overridden per release by CI with the
+#                commit SHA so `helm list` shows exactly what is deployed
+version: 0.1.0
+appVersion: "0.1.0"
+
+keywords: [ai, meetings, fastapi, react]
+home: https://github.com/Suswetha6/triplemind
+maintainers:
+  - name: Suswetha Gottimukkala

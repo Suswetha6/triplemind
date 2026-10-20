@@ -1,0 +1,23 @@
+# Local (Compose) Prometheus. In Kubernetes the same job is done by the
+# ServiceMonitor in the Helm chart; the metric names and alert expressions are
+# identical so a dashboard built here works there unchanged.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    environment: local
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: triplemind-backend
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["backend:8000"]
+        labels:
+          service: triplemind-backend
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

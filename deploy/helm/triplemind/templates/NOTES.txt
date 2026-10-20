@@ -1,0 +1,30 @@
+TripleMind {{ .Values.global.appVersion | default .Chart.AppVersion }} deployed as "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Verify the release:
+
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }}
+  kubectl get deploy -n {{ .Release.Namespace }} -L app.kubernetes.io/version
+  kubectl rollout status deploy/{{ include "triplemind.backendFullname" . }} -n {{ .Release.Namespace }}
+
+Confirm the running version matches the commit you deployed:
+
+  kubectl run -n {{ .Release.Namespace }} ver --rm -it --restart=Never --image=curlimages/curl:8.11.1 -- \
+    curl -s http://{{ include "triplemind.backendFullname" . }}:{{ .Values.backend.service.port }}/version
+
+Reach the app:
+{{- if .Values.ingress.enabled }}
+
+  http{{ if .Values.ingress.tls.enabled }}s{{ end }}://{{ .Values.ingress.host }}
+{{- else }}
+
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "triplemind.frontendFullname" . }} 8080:{{ .Values.frontend.service.port }}
+  open http://localhost:8080
+{{- end }}
+
+Then open Settings in the UI and paste a Groq API key. The deployment stores no
+provider credentials: the key lives in the browser and is forwarded per request.
+
+Roll back a bad release:
+
+  helm history {{ .Release.Name }} -n {{ .Release.Namespace }}
+  helm rollback {{ .Release.Name }} <REVISION> -n {{ .Release.Namespace }} --wait

@@ -1,0 +1,59 @@
+# Local kind cluster. Single node, images side-loaded, no registry pulls.
+global:
+  environment: dev
+
+backend:
+  replicaCount: 1
+  image:
+    repository: triplemind-backend
+    tag: dev
+    # Nothing to pull: `kind load docker-image` puts the image on the node.
+    pullPolicy: Never
+  autoscaling:
+    # On by default locally so the HPA is a real, observable object rather than
+    # an untested template. Requires metrics-server (`make metrics-server`).
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 4
+    targetCPUUtilizationPercentage: 60
+    targetMemoryUtilizationPercentage: null
+  podDisruptionBudget:
+    # A PDB with one replica would block node drains on a single-node cluster.
+    enabled: false
+  config:
+    logLevel: DEBUG
+    rateLimitRequests: 1000
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 384Mi
+
+frontend:
+  replicaCount: 1
+  image:
+    repository: triplemind-frontend
+    tag: dev
+    pullPolicy: Never
+  podDisruptionBudget:
+    enabled: false
+
+ingress:
+  enabled: true
+  className: nginx
+  host: triplemind.localtest.me
+
+networkPolicy:
+  # kind's default CNI (kindnet) does not enforce NetworkPolicy, so applying
+  # these locally would give false assurance. Rendered and validated in CI
+  # instead; enabled in any cluster with a policy-capable CNI.
+  enabled: false
+
+monitoring:
+  # Turned on by scripts/install-monitoring.sh once the Prometheus Operator
+  # CRDs exist. Left off here so `make deploy` works on a bare cluster.
+  serviceMonitor:
+    enabled: false
+  prometheusRule:
+    enabled: false

@@ -1,0 +1,64 @@
+# Reference production overlay. Not deployed as part of this project -- it
+# exists to show which knobs change between environments, and to be rendered
+# and policy-checked in CI alongside the dev overlay.
+global:
+  environment: production
+
+backend:
+  replicaCount: 3
+  image:
+    pullPolicy: IfNotPresent
+    # Production pins a digest, set by CD from the image it just built, so a
+    # retag upstream cannot change what is running.
+    digest: ""
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 12
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
+  config:
+    logLevel: INFO
+    rateLimitRequests: 60
+    # Locked to the real origin; the wildcard is never acceptable here.
+    trustedHosts: "triplemind.example.com"
+  tracing:
+    enabled: true
+    samplerRatio: 0.1   # full sampling is wasteful at production volume
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      memory: 768Mi
+
+frontend:
+  replicaCount: 3
+  autoscaling:
+    enabled: true
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
+
+ingress:
+  enabled: true
+  host: triplemind.example.com
+  tls:
+    enabled: true
+    secretName: triplemind-tls
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-body-size: 25m
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+
+networkPolicy:
+  enabled: true
+
+monitoring:
+  serviceMonitor:
+    enabled: true
+  prometheusRule:
+    enabled: true

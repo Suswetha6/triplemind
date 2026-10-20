@@ -1,0 +1,129 @@
+{{- /* Skipped when the Prometheus Operator CRDs are absent, so the chart
+       installs on a bare cluster. scripts/install-monitoring.sh asserts these
+       objects exist after installing the operator, so a missing monitoring
+       setup cannot pass unnoticed. */ -}}
+{{- if and .Values.monitoring.prometheusRule.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") }}
+{{- $slo := .Values.monitoring.prometheusRule.slo }}
+{{- $err := sub 1.0 $slo.availabilityTarget }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "triplemind.fullname" . }}
+  labels:
+    {{- include "triplemind.labels" . | nindent 4 }}
+    {{- with .Values.monitoring.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    # Recording rules first: the alerts below and the Grafana dashboard read
+    # the same series, so what pages you and what you look at cannot disagree.
+    - name: triplemind.slo.recording
+      interval: 30s
+      rules:
+        - record: triplemind:request_error_ratio:rate5m
+          expr: |
+            (sum(rate(triplemind_http_requests_total{status=~"5.."}[5m])) or vector(0))
+              /
+            clamp_min(sum(rate(triplemind_http_requests_total[5m])), 1e-9)
+        - record: triplemind:request_error_ratio:rate1h
+          expr: |
+            (sum(rate(triplemind_http_requests_total{status=~"5.."}[1h])) or vector(0))
+              /
+            clamp_min(sum(rate(triplemind_http_requests_total[1h])), 1e-9)
+        - record: triplemind:request_latency_p95:5m
+          expr: |
+            histogram_quantile(
+              0.95,
+              sum by (le) (rate(triplemind_http_request_duration_seconds_bucket{route!~"/healthz|/readyz|/metrics"}[5m]))
+            )
+        - record: triplemind:upstream_error_ratio:rate5m
+          expr: |
+            (sum(rate(triplemind_upstream_requests_total{outcome!="success"}[5m])) or vector(0))
+              /
+            clamp_min(sum(rate(triplemind_upstream_requests_total[5m])), 1e-9)
+
+    - name: triplemind.alerts
+      rules:
+        # Availability SLO: {{ $slo.availabilityTarget }} of requests succeed.
+        # Fast burn -- the error budget would be gone within hours. Page.
+        - alert: TripleMindErrorBudgetFastBurn
+          expr: |
+            triplemind:request_error_ratio:rate5m > {{ mulf 14.4 $err }}
+            and
+            triplemind:request_error_ratio:rate1h > {{ mulf 14.4 $err }}
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: TripleMind is burning its error budget 14x faster than sustainable
+            description: >-
+              5xx ratio is {{ "{{" }} $value | humanizePercentage {{ "}}" }}.
+              Check `kubectl logs -l app.kubernetes.io/component=backend` filtered on
+              level=ERROR, and the upstream_status field -- a Groq outage shows up as
+              triplemind_upstream_requests_total{outcome="error"} rather than application faults.
+
+        # Slow burn -- degraded but not urgent. Ticket, don't page.
+        - alert: TripleMindErrorBudgetSlowBurn
+          expr: triplemind:request_error_ratio:rate1h > {{ mulf 3.0 $err }}
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: TripleMind error ratio above the slow-burn threshold
+            description: >-
+              Degraded but not urgent -- ticket rather than page. Check whether the burn
+              started at a release boundary (`helm history triplemind -n triplemind`); if so
+              roll back, if not compare against the Groq outcome series first.
+
+        - alert: TripleMindLatencyBudgetExceeded
+          expr: triplemind:request_latency_p95:5m > {{ $slo.latencyBudgetSeconds }}
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: p95 latency above {{ $slo.latencyBudgetSeconds }}s
+            description: >-
+              Suggestions refresh on a 30s cadence; sustained p95 above the budget means
+              a batch misses its window. Compare triplemind_upstream_duration_seconds to
+              separate our latency from Groq's.
+
+        - alert: TripleMindUpstreamDegraded
+          expr: triplemind:upstream_error_ratio:rate5m > 0.25
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Over a quarter of Groq calls are failing
+            description: >-
+              This is usually provider-side or a bad user API key, not a TripleMind fault.
+              Verify before rolling back -- a rollback will not fix an upstream outage.
+
+        - alert: TripleMindBackendAbsent
+          expr: |
+            absent(up{job=~".*triplemind.*backend.*"} == 1)
+          for: 3m
+          labels:
+            severity: critical
+          annotations:
+            summary: No healthy backend targets are being scraped
+            description: >-
+              Either no backend pods exist, or they exist but cannot be scraped. Check
+              `kubectl get pods -n <ns>` first; if pods are healthy, suspect the
+              ServiceMonitor or the NetworkPolicy, which only admits scrapes from a
+              namespace labelled kubernetes.io/metadata.name=observability.
+
+        - alert: TripleMindPodCrashLooping
+          expr: |
+            increase(kube_pod_container_status_restarts_total{container=~"backend|frontend"}[15m]) > 3
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: A TripleMind container is restarting repeatedly
+            description: >-
+              `kubectl logs <pod> --previous` shows the cause. A stack trace at import time
+              with the startup probe reporting "connection refused" is a bad config value
+              rather than a code fault -- check the mounted ConfigMap, and roll back if the
+              value arrived with a release.
+{{- end }}

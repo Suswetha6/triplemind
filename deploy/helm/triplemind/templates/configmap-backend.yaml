@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "triplemind.backendFullname" . }}
+  labels: {{- include "triplemind.componentLabels" (dict "root" . "component" "backend") | nindent 4 }}
+data:
+  # Non-secret configuration only. Everything here is safe to read with
+  # `kubectl get configmap -o yaml`; secrets go through backend.existingSecret.
+  TM_ENVIRONMENT: {{ .Values.global.environment | quote }}
+  TM_LOG_LEVEL: {{ .Values.backend.config.logLevel | quote }}
+  TM_LOG_FORMAT: {{ .Values.backend.config.logFormat | quote }}
+  TM_GROQ_BASE_URL: {{ .Values.backend.config.groqBaseUrl | quote }}
+  TM_CORS_ALLOW_ORIGINS: {{ .Values.backend.config.corsAllowOrigins | quote }}
+  TM_TRUSTED_HOSTS: {{ .Values.backend.config.trustedHosts | quote }}
+  # int64 before quote: Helm parses YAML numbers as float64, so a plain
+  # `quote` renders 26214400 as "2.62144e+07" and the backend refuses to start.
+  TM_RATE_LIMIT_REQUESTS: {{ .Values.backend.config.rateLimitRequests | int64 | quote }}
+  TM_RATE_LIMIT_WINDOW_SECONDS: {{ .Values.backend.config.rateLimitWindowSeconds | int64 | quote }}
+  TM_MAX_UPLOAD_BYTES: {{ .Values.backend.config.maxUploadBytes | int64 | quote }}
+  TM_UPSTREAM_TIMEOUT_SECONDS: {{ .Values.backend.config.upstreamTimeoutSeconds | int64 | quote }}
+  {{- if .Values.backend.tracing.enabled }}
+  TM_OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.backend.tracing.otlpEndpoint | quote }}
+  TM_OTEL_TRACES_SAMPLER_RATIO: {{ .Values.backend.tracing.samplerRatio | quote }}
+  {{- end }}

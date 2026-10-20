@@ -1,0 +1,32 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "triplemind.fullname" . }}
+  labels: {{- include "triplemind.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host | quote }}
+      secretName: {{ .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          # One rule, one backend: nginx inside the frontend pod owns the
+          # /api split. Routing it here too would mean two places to keep in
+          # sync, and the browser would then need CORS for a second origin.
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "triplemind.frontendFullname" . }}
+                port:
+                  number: {{ .Values.frontend.service.port }}
+{{- end }}

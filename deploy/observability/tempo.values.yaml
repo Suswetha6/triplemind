@@ -1,0 +1,22 @@
+# Single-binary Tempo. Trace retention is deliberately short: traces here are
+# for investigating a request you just made, not for long-term analysis.
+fullnameOverride: tempo
+
+tempo:
+  retention: 1h
+  receivers:
+    otlp:
+      protocols:
+        http:
+          endpoint: 0.0.0.0:4318
+        grpc:
+          endpoint: 0.0.0.0:4317
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+
+persistence:
+  enabled: false
