@@ -1,0 +1,21 @@
+# Gitleaks configuration.
+#
+# The default ruleset is kept in full; this only allowlists the specific
+# placeholder strings used by the test suite and the demo script. They match
+# the generic-api-key rule by shape (long, high-entropy-ish, gsk_ prefix) but
+# are not credentials -- the real Groq key belongs to the end user and never
+# enters this repository or the cluster.
+#
+# Allowlisting by *literal value* rather than by path on purpose: exempting
+# backend/tests/ wholesale would also hide a genuine key if one were ever
+# pasted into a test. These three strings, and only these, are exempt.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Documented non-credential placeholders"
+regexes = [
+  '''gsk_test_key_123456''',
+  '''gsk_demo_key_not_a_real_credential''',
+  '''gsk_test_key''',
+]

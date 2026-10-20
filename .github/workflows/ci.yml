@@ -161,10 +161,15 @@ jobs:
           # Full history so the secret scan covers every commit, not just the tip.
           fetch-depth: 0
 
+      # Scans the full history, not just the tip -- a key removed in a later
+      # commit is still a leaked key. .gitleaks.toml allowlists the three
+      # documented placeholder strings by literal value, so a real key pasted
+      # into a test would still fail this step.
       - name: Secret scan (gitleaks)
         run: |
           docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.21.2 \
-            detect --source=/repo --redact --verbose --no-banner
+            detect --source=/repo --config=/repo/.gitleaks.toml \
+            --redact --verbose --no-banner
 
       - name: Dependency and config scan (trivy)
         uses: aquasecurity/trivy-action@v0.36.0
