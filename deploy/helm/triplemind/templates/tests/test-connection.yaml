@@ -7,7 +7,12 @@ metadata:
   labels: {{- include "triplemind.labels" . | nindent 4 }}
   annotations:
     helm.sh/hook: test
-    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+    # Deliberately NOT hook-succeeded: `helm test --logs` fetches the pod's
+    # logs after the pod finishes, and deleting on success races that fetch --
+    # which fails the command with "pods not found" even though the test
+    # passed. before-hook-creation still clears the previous run's pod, so
+    # repeated `helm test` invocations stay idempotent.
+    helm.sh/hook-delete-policy: before-hook-creation
 spec:
   restartPolicy: Never
   securityContext:

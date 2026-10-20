@@ -171,6 +171,9 @@ jobs:
             detect --source=/repo --config=/repo/.gitleaks.toml \
             --redact --verbose --no-banner
 
+      # Two passes on purpose. SARIF is machine-readable but prints nothing, so
+      # a failure here used to say only "exit code 1". The table pass runs
+      # first and is what fails the job, so the log names the finding.
       - name: Dependency and config scan (trivy)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -180,12 +183,24 @@ jobs:
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: "1"
+          format: table
+
+      - name: Dependency and config scan -- SARIF for code scanning
+        uses: aquasecurity/trivy-action@v0.36.0
+        if: always()
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "0"
           format: sarif
           output: trivy-fs.sarif
 
       - name: Upload findings
         uses: github/codeql-action/upload-sarif@v3
-        if: always()
+        if: always() && hashFiles('trivy-fs.sarif') != ''
         with:
           sarif_file: trivy-fs.sarif
           category: trivy-fs
@@ -241,11 +256,21 @@ jobs:
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: "1"
+          format: table
+
+      - name: Scan image -- SARIF for code scanning
+        uses: aquasecurity/trivy-action@v0.36.0
+        if: always()
+        with:
+          image-ref: triplemind-${{ matrix.component }}:${{ github.sha }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "0"
           format: sarif
           output: trivy-${{ matrix.component }}.sarif
 
       - uses: github/codeql-action/upload-sarif@v3
-        if: always()
+        if: always() && hashFiles(format('trivy-{0}.sarif', matrix.component)) != ''
         with:
           sarif_file: trivy-${{ matrix.component }}.sarif
           category: trivy-image-${{ matrix.component }}
